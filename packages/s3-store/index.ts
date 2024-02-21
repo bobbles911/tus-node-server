@@ -32,6 +32,7 @@ type Options = {
   maxConcurrentPartUploads?: number
   cache?: KvStore<MetadataValue>
   expirationPeriodInMilliseconds?: number
+  keyPrefix?: string
   // Options to pass to the AWS S3 SDK.
   s3ClientConfig: S3ClientConfig & {bucket: string}
 }
@@ -86,6 +87,7 @@ export class S3Store extends DataStore {
   private client: S3
   private preferredPartSize: number
   private expirationPeriodInMilliseconds = 0
+  private keyPrefix = ""
   private useTags = true
   private partUploadSemaphore: Semaphore
   public maxMultipartParts = 10_000 as const
@@ -106,6 +108,7 @@ export class S3Store extends DataStore {
     this.bucket = bucket
     this.preferredPartSize = partSize || 8 * 1024 * 1024
     this.expirationPeriodInMilliseconds = options.expirationPeriodInMilliseconds ?? 0
+    this.keyPrefix = options.keyPrefix ?? ""
     this.useTags = options.useTags ?? true
     this.cache = options.cache ?? new MemoryKvStore<MetadataValue>()
     this.client = new S3(restS3ClientConfig)
@@ -194,8 +197,12 @@ export class S3Store extends DataStore {
     return metadata
   }
 
+  private objectKey(id: string) {
+    return this.keyPrefix + id
+  }
+
   private infoKey(id: string) {
-    return `${id}.info`
+    return this.keyPrefix + `${id}.info`
   }
 
   private partKey(id: string, isIncomplete = false) {
@@ -207,7 +214,7 @@ export class S3Store extends DataStore {
     // ObjectPrefix is prepended to the name of each S3 object that is created
     // to store uploaded files. It can be used to create a pseudo-directory
     // structure in the bucket, e.g. "path/to/my/uploads".
-    return id
+    return this.keyPrefix + id
   }
 
   private async uploadPart(
@@ -217,7 +224,7 @@ export class S3Store extends DataStore {
   ): Promise<string> {
     const data = await this.client.uploadPart({
       Bucket: this.bucket,
-      Key: metadata.file.id,
+      Key: this.objectKey(metadata.file.id),
       UploadId: metadata['upload-id'],
       PartNumber: partNumber,
       Body: readStream,
@@ -426,7 +433,7 @@ export class S3Store extends DataStore {
   private async finishMultipartUpload(metadata: MetadataValue, parts: Array<AWS.Part>) {
     const response = await this.client.completeMultipartUpload({
       Bucket: this.bucket,
-      Key: metadata.file.id,
+      Key: this.objectKey(metadata.file.id),
       UploadId: metadata['upload-id'],
       MultipartUpload: {
         Parts: parts.map((part) => {
@@ -452,7 +459,7 @@ export class S3Store extends DataStore {
 
     const params: AWS.ListPartsCommandInput = {
       Bucket: this.bucket,
-      Key: id,
+      Key: this.objectKey(id),
       UploadId: metadata['upload-id'],
       PartNumberMarker: partNumberMarker,
     }
@@ -515,7 +522,7 @@ export class S3Store extends DataStore {
     log(`[${upload.id}] initializing multipart upload`)
     const request: AWS.CreateMultipartUploadCommandInput = {
       Bucket: this.bucket,
-      Key: upload.id,
+      Key: this.objectKey(upload.id),
       Metadata: {'tus-version': TUS_RESUMABLE},
     }
 
@@ -539,7 +546,7 @@ export class S3Store extends DataStore {
   async read(id: string) {
     const data = await this.client.getObject({
       Bucket: this.bucket,
-      Key: id,
+      Key: this.objectKey(id),
     })
     return data.Body as Readable
   }
@@ -647,7 +654,7 @@ export class S3Store extends DataStore {
       if (uploadId) {
         await this.client.abortMultipartUpload({
           Bucket: this.bucket,
-          Key: id,
+          Key: this.objectKey(id),
           UploadId: uploadId,
         })
       }
@@ -662,7 +669,7 @@ export class S3Store extends DataStore {
     await this.client.deleteObjects({
       Bucket: this.bucket,
       Delete: {
-        Objects: [{Key: id}, {Key: this.infoKey(id)}],
+        Objects: [{Key: this.objectKey(id)}, {Key: this.infoKey(id)}],
       },
     })
 
